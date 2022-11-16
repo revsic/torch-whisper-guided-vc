@@ -12,6 +12,7 @@ class UNet(nn.Module):
                  channels: int,
                  kernels: int,
                  aux: int,
+                 context: int,
                  stages: int,
                  blocks: int):
         """Initializer.
@@ -20,6 +21,7 @@ class UNet(nn.Module):
             channels: size of the hidden channels.
             kernels: size of the convolutional kernels.
             aux: size of the auxiliary channels.
+            context: size of the context channels.
             stages: the number of the resolution scales.
             blocks: the number of the residual blocks in each stages.
         """
@@ -27,7 +29,7 @@ class UNet(nn.Module):
         self.proj = nn.Conv1d(mel, channels, 1)
         self.dblocks = nn.ModuleList([
             AuxSequential([
-                AuxResidualBlock(channels * 2 ** i, kernels, aux)
+                AuxResidualBlock(channels * 2 ** i, kernels, aux, context)
                 for _ in range(blocks)])
             for i in range(stages - 1)])
 
@@ -37,7 +39,7 @@ class UNet(nn.Module):
             for i in range(stages - 1)])
 
         self.neck = AuxResidualBlock(
-            channels * 2 ** (stages - 1), kernels, aux)
+            channels * 2 ** (stages - 1), kernels, aux, context)
 
         self.upsamples = nn.ModuleList([
             # double resolution
@@ -48,7 +50,7 @@ class UNet(nn.Module):
 
         self.ublocks = nn.ModuleList([
             AuxSequential([
-                AuxResidualBlock(channels * 2 ** i, kernels, aux)
+                AuxResidualBlock(channels * 2 ** i, kernels, aux, context)
                 for _ in range(blocks)])
             for i in range(stages - 2, -1, -1)])
 
@@ -56,11 +58,15 @@ class UNet(nn.Module):
             nn.ReLU(),
             nn.Conv1d(channels, mel, 1))
 
-    def forward(self, inputs: torch.Tensor, aux: torch.Tensor) -> torch.Tensor:
+    def forward(self,
+                inputs: torch.Tensor,
+                aux: torch.Tensor,
+                context: torch.Tensor) -> torch.Tensor:
         """Spectrogram U-net.
         Args:
             inputs: [torch.float32; [B, mel, T]], input tensor, spectrogram.
-            aux: [torch.float32; [B, A(=aux)]], auxiliary informations, times.
+            aux: [torch.float32; [B, aux]], auxiliary informations, times.
+            context: [torch.float32; [B, context, T']], contextual features.
         Returns:
             [torch.float32; [B, mel, T]], transformed.
         """
@@ -70,14 +76,14 @@ class UNet(nn.Module):
         internals = []
         for dblock, downsample in zip(self.dblocks, self.downsamples):
             # [B, C x 2^i, T / 2^i]
-            x = dblock(x, aux)
+            x = dblock(x, aux, context)
             internals.append(x)
             # [B, C x 2^(i + 1), T / 2^(i + 1)]
             x = downsample(x)
         # [B, C x 2^stages, T / 2^stages]
-        x = self.neck(x, aux)
+        x = self.neck(x, aux, context)
         for i, ublock, upsample in zip(reversed(internals), self.ublocks, self.upsamples):
             # [B, C x 2^i, T / 2^i]
-            x = ublock(upsample(x) + i, aux)
+            x = ublock(upsample(x) + i, aux, context)
         # [B, mel, T]
         return self.proj_out(x)
