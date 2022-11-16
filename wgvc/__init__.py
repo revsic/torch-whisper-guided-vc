@@ -21,6 +21,7 @@ class WhisperGuidedVC(nn.Module):
             config: configurations.
         """
         super().__init__()
+        self.w = config.w
         self.steps = config.steps
         self.embedder = Embedder(
             config.pe,
@@ -35,6 +36,9 @@ class WhisperGuidedVC(nn.Module):
             config.logit_max)
 
         self.spkembed = nn.Embedding(config.num_spk, config.spk)
+        # for classifier-free guidance
+        self.register_buffer('nullspk', torch.randn(config.spk))
+        self.register_buffer('nullcontext', torch.randn(config.context))
 
         self.wav2vec2 = Wav2Vec2Wrapper(
             config.w2v_name,
@@ -132,12 +136,22 @@ class WhisperGuidedVC(nn.Module):
             [torch.float32; [B, mel, T]], waveform mean, z_{t - 1}
             [torch.float32; [B]], waveform std.
         """
+        # B, _, T
+        bsize, _, timestep = signal.shape
         # [S + 1]
         logsnr, betas = self.scheduler()
         # [S + 1]
         alphas, alphas_bar = 1. - betas, torch.sigmoid(logsnr)
         # [B, mel, T]
-        denoised = self.denoise(signal, context, spk, steps)
+        cond = self.denoise(signal, context, spk, steps)
+        # [B, mel, T]
+        uncond = self.denoise(
+            signal,
+            self.nullcontext[None, :, None].repeat(bsize, 1, timestep),
+            self.nullspk[None].repeat(bsize),
+            steps)
+        # [B, mel, T], classifier-free guidance
+        denoised = (1 + self.w) * cond - self.w * uncond
         # [B], make one-based
         prev, steps = steps, steps + 1
         # [B, mel, T]
