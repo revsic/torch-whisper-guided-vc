@@ -1,4 +1,4 @@
-from typing import Dict, Optional, Tuple
+from typing import Dict, Optional
 
 import torch
 import torch.nn as nn
@@ -20,7 +20,6 @@ class Wav2Vec2Wrapper(nn.Module):
     def __init__(self,
                  name: Optional[str] = None,
                  sr: int = 16000,
-                 speaker: Optional[int] = None,
                  linguistic: Optional[int] = None):
         """Load the wav2vec2.0 pretrained model.
         Args:
@@ -37,16 +36,13 @@ class Wav2Vec2Wrapper(nn.Module):
 
         self.sr = sr
         self.resample = torchaudio.transforms.Resample(sr, 16000)
-
-        self.speaker = speaker or Wav2Vec2Wrapper.SPEAKER
         self.linguistic = linguistic or Wav2Vec2Wrapper.LINGUISTIC
 
     @torch.no_grad()
     def forward(self,
                 audio: torch.Tensor,
                 audiolen: Optional[torch.Tensor] = None,
-                return_all: bool = False) \
-            -> Tuple[torch.Tensor, torch.Tensor]:
+                return_all: bool = False) -> torch.Tensor:
         """Extract the features from audio.
         Args:
             audio: [torch.float32; [B, T']], audio, [-1, 1]-ranged.
@@ -54,7 +50,6 @@ class Wav2Vec2Wrapper(nn.Module):
                 masking the inputs if provided.
             return_all: return all hidden states if True, debugging purpose.
         Returns:
-            speaker: [torch.float32; [B, S, C]], verification purpose encodings.
             linguistic: [torch.float32; [B, S, C]], linguistic encodings,
                 where S = T // 320, T = floor(T' / `sr` x 16000)
         """
@@ -86,11 +81,8 @@ class Wav2Vec2Wrapper(nn.Module):
             output_hidden_states=True)
         if return_all:
             return output
-        # [B, S, C(=1024)]
-        speaker = output.hidden_states[self.speaker]
-        # [B, S, C(=1024)]
         linguistic = output.hidden_states[self.linguistic]
-        return speaker, linguistic
+        return linguistic
 
     def train(self, _: bool = True):
         """Support only evaluation
