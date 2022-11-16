@@ -33,3 +33,6 @@ class Config:
 
         # speaker embedding
         self.spk = 512
+
+        # classifier-free guidance
+        self.w = 0.3
