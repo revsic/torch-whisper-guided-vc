@@ -30,9 +30,18 @@ class Config:
 
         # whisper
         self.whisper_name = 'openai/whisper-base'
+        # classifier-guidance, with norm-based scaling
+        # , default 0.3 on guided-tts 2
+        self.norm_scale = 0.3
 
         # speaker embedding
         self.spk = 512
 
-        # classifier-free guidance
+        # classifier-free guidance, speaker
+        # , default 1.0 on guided-tts 2
+        # , default 0.3 on classifier-free guidance
         self.w = 0.3
+
+        # prior temperature
+        # , default 1.5 on guided-tts 2
+        self.tau = 1.5

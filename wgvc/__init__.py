@@ -22,6 +22,8 @@ class WhisperGuidedVC(nn.Module):
         """
         super().__init__()
         self.w = config.w
+        self.tau = config.tau
+        self.norm_scale = config.norm_scale
         self.steps = config.steps
         self.proj_signal = nn.utils.weight_norm(
             nn.Conv1d(1, config.channels, 1))
@@ -82,6 +84,8 @@ class WhisperGuidedVC(nn.Module):
         spk = self.spkembed(spkid)
         # [B, T]
         signal = signal or torch.randn_like(context)
+        # apply temperature
+        signal = signal * self.tau ** -0.5
         # S x [B, mel, T]
         ir = [signal.cpu().detach().numpy()]
         # zero-based step
