@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from tqdm import tqdm
 
 from .config import Config
@@ -86,6 +87,8 @@ class WhisperGuidedVC(nn.Module):
         signal = signal or torch.randn_like(context)
         # apply temperature
         signal = signal * self.tau ** -0.5
+        # [B, d_model, T // hop_length]
+        context = self.whisper(context)
         # S x [B, mel, T]
         ir = [signal.cpu().detach().numpy()]
         # zero-based step
@@ -139,7 +142,8 @@ class WhisperGuidedVC(nn.Module):
         """Inverse process, single step denoise.
         Args:
             signal: [torch.float32; [B, T]], input signal, z_{t}.
-            context: [torch.float32; [B, context, T]], contextualized.
+            context: [torch.float32; [B, d_moel, T // hop_length]],
+                whisper encoded feature map for classifier-guidance.
             spk: [torch.float32; [B, spk]], speaker vectors.
             steps: [torch.long; [B]], t, diffusion steps, zero-based.
         Returns:
@@ -160,6 +164,21 @@ class WhisperGuidedVC(nn.Module):
         denoised = (1 + self.w) * cond - self.w * uncond
         # [B], make one-based
         prev, steps = steps, steps + 1
+
+        # [B, d_model, T // hop_length]
+        encoded = self.whisper(signal)
+        # [], measure
+        measure = torch.square(encoded - context).mean()
+        # measure = (
+        #     F.normalize(encoded, dim=1)
+        #     * F.normalize(context, dim=1)).sum(dim=1).mean()
+        # [B, T], compute score
+        score = torch.autograd.grad(measure, signal)
+        # [B, T], score to signal-level guidance
+        denoised = denoised + self.norm_scale * (
+                denoised.norm(dim=-1) / score.norm(dim=-1).clamp_min(1e-10)
+            ) * (score * std ** 2 + z_t) / alpha_t
+
         # [B, T]
         mean = alphas_bar[prev, None].sqrt() * betas[steps, None] / (
                 1 - alphas_bar[steps, None]) * denoised + \
