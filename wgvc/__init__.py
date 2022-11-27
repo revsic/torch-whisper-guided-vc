@@ -8,8 +8,8 @@ from tqdm import tqdm
 from .config import Config
 from .embedder import Embedder
 from .scheduler import Scheduler
-from .unet import UNet
-from .wav2vec2 import Wav2Vec2Wrapper
+from .wavenet import WaveNetBlock
+from .whisper import WhisperWrapper
 
 
 class WhisperGuidedVC(nn.Module):
@@ -23,6 +23,9 @@ class WhisperGuidedVC(nn.Module):
         super().__init__()
         self.w = config.w
         self.steps = config.steps
+        self.proj_signal = nn.utils.weight_norm(
+            nn.Conv1d(1, config.channels, 1))
+
         self.embedder = Embedder(
             config.pe,
             config.embeddings,
@@ -38,21 +41,26 @@ class WhisperGuidedVC(nn.Module):
         self.spkembed = nn.Embedding(config.num_spk, config.spk)
         # for classifier-free guidance
         self.register_buffer('nullspk', torch.randn(config.spk))
-        self.register_buffer('nullcontext', torch.randn(config.context))
 
-        self.wav2vec2 = Wav2Vec2Wrapper(
-            config.w2v_name,
-            config.sr,
-            config.w2v_lin)
+        self.blocks = nn.ModuleList([
+            WaveNetBlock(
+                config.channels,
+                config.embeddings + config.spk,
+                config.kernels,
+                config.dilations ** j)
+            for _ in range(config.cycles)
+            for j in range(config.layers)])
 
-        self.unet = UNet(
-            config.mel,
-            config.channels,
-            config.kernels,
-            config.embeddings + config.spk,
-            config.context,
-            config.stages,
-            config.blocks)
+        self.proj_out = nn.Sequential(
+            nn.ReLU(),
+            nn.utils.weight_norm(nn.Conv1d(config.channels, config.channels, 1)),
+            nn.ReLU(),
+            nn.utils.weight_norm(nn.Conv1d(config.channels, 1, 1)),
+            nn.Tanh())
+
+        self.whisper = WhisperWrapper(
+            config.whisper_name,
+            config.sr)
 
     def forward(self,
                 context: torch.Tensor,
@@ -62,20 +70,18 @@ class WhisperGuidedVC(nn.Module):
             -> Tuple[torch.Tensor, List[np.ndarray]]:
         """Generated waveform conditioned on mel-spectrogram.
         Args:
-            context: [torch.float32; [B, mel, T]], context mel-spectrogram.
+            context: [torch.float32; [B, T]], context audio signal.
             spkid: [torch.long; [B]], speaker id.
-            signal: [torch.float32; [B, mel, T]], initial noise.
+            signal: [torch.float32; [B, T]], initial noise.
             use_tqdm: use tqdm range or not.
         Returns:
-            [torch.float32; [B, mel, T]], denoised result.
-            S x [np.float32; [B, mel, T]], internal representations.
+            [torch.float32; [B, T]], denoised result.
+            S x [np.float32; [B, T]], internal representations.
         """
         # [B, spk]
         spk = self.spkembed(spkid)
-        # [B, mel, T]
+        # [B, T]
         signal = signal or torch.randn_like(context)
-        # [B, context, T], contextualized.
-        context = self.wav2vec2(context)
         # S x [B, mel, T]
         ir = [signal.cpu().detach().numpy()]
         # zero-based step
@@ -85,12 +91,12 @@ class WhisperGuidedVC(nn.Module):
         for step in ranges:
             # [1]
             step = torch.tensor([step], device=signal.device)
-            # [B, mel, T], [B]
+            # [B, T], [B]
             mean, std = self.inverse(signal, context, spk, step)
-            # [B, mel, T]
-            signal = mean + torch.randn_like(mean) * std[:, None, None]
+            # [B, T]
+            signal = mean + torch.randn_like(mean) * std[:, None]
             ir.append(signal.cpu().detach().numpy())
-        # [B, mel, T]
+        # [B, T]
         return signal, ir
 
     def diffusion(self,
@@ -99,12 +105,12 @@ class WhisperGuidedVC(nn.Module):
                   next_: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
         """Diffusion process.
         Args:
-            signal: [torch.float32; [B, mel, T]], input signal.
+            signal: [torch.float32; [B, T]], input signal.
             steps: [torch.long; [B]], t, target diffusion steps, zero-based.
             next_: whether move single steps or multiple steps.
                 if next_, signal is z_{t - 1}, otherwise signal is z_0.
         Returns:
-            [torch.float32; [B, mel, T]], z_{t}, diffused mean.
+            [torch.float32; [B, T]], z_{t}, diffused mean.
             [torch.float32; [B]], standard deviation.
         """
         # [S + 1]
@@ -118,8 +124,8 @@ class WhisperGuidedVC(nn.Module):
         alphas_bar = torch.sigmoid(logsnr)
         # [B], one-based sample
         alpha_bar = alphas_bar[steps + 1]
-        # [B, mel, T], [B]
-        return alpha_bar[:, None, None].sqrt() * signal, (1 - alpha_bar).sqrt()
+        # [B, T], [B]
+        return alpha_bar[:, None].sqrt() * signal, (1 - alpha_bar).sqrt()
 
     def inverse(self,
                 signal: torch.Tensor,
@@ -128,59 +134,62 @@ class WhisperGuidedVC(nn.Module):
                 steps: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Inverse process, single step denoise.
         Args:
-            signal: [torch.float32; [B, mel, T]], input signal, z_{t}.
+            signal: [torch.float32; [B, T]], input signal, z_{t}.
             context: [torch.float32; [B, context, T]], contextualized.
             spk: [torch.float32; [B, spk]], speaker vectors.
             steps: [torch.long; [B]], t, diffusion steps, zero-based.
         Returns:
-            [torch.float32; [B, mel, T]], waveform mean, z_{t - 1}
+            [torch.float32; [B, T]], waveform mean, z_{t - 1}
             [torch.float32; [B]], waveform std.
         """
-        # B, _, T
-        bsize, _, timestep = signal.shape
+        # B, T
+        bsize, _ = signal.shape
         # [S + 1]
         logsnr, betas = self.scheduler()
         # [S + 1]
         alphas, alphas_bar = 1. - betas, torch.sigmoid(logsnr)
-        # [B, mel, T]
-        cond = self.denoise(signal, context, spk, steps)
-        # [B, mel, T]
-        uncond = self.denoise(
-            signal,
-            self.nullcontext[None, :, None].repeat(bsize, 1, timestep),
-            self.nullspk[None].repeat(bsize),
-            steps)
-        # [B, mel, T], classifier-free guidance
+        # [B, T]
+        cond = self.denoise(signal, spk, steps)
+        # [B, T]
+        uncond = self.denoise(signal, self.nullspk[None].repeat(bsize), steps)
+        # [B, T], classifier-free guidance
         denoised = (1 + self.w) * cond - self.w * uncond
         # [B], make one-based
         prev, steps = steps, steps + 1
-        # [B, mel, T]
-        mean = alphas_bar[prev, None, None].sqrt() * betas[steps, None, None] / (
-                1 - alphas_bar[steps, None, None]) * denoised + \
-            alphas[steps, None, None].sqrt() * (1. - alphas_bar[prev, None, None]) / (
-                1 - alphas_bar[steps, None, None]) * signal
+        # [B, T]
+        mean = alphas_bar[prev, None].sqrt() * betas[steps, None] / (
+                1 - alphas_bar[steps, None]) * denoised + \
+            alphas[steps, None].sqrt() * (1. - alphas_bar[prev, None]) / (
+                1 - alphas_bar[steps, None]) * signal
         # [B]
         var = (1 - alphas_bar[prev]) / (1 - alphas_bar[steps]) * betas[steps]
         return mean, var.sqrt()
 
     def denoise(self,
                 signal: torch.Tensor,
-                context: torch.Tensor,
                 spk: torch.Tensor,
                 steps: torch.Tensor) -> torch.Tensor:
         """Denoise the signal w.r.t. outpart signal.
         Args:
-            signal: [torch.float32; [B, mel, T]], input signal.
-            context: [torch.float32; [B, context, T]], contextualized.
+            signal: [torch.float32; [B, T]], input signal.
             spk: [torch.float32; [B, spk]], speaker vectors.
             steps: [torch.long; [B]], diffusion steps, zero-based.
         Returns:
-            [torch.float32; [B, mel, T]], denoised signal.
+            [torch.float32; [B, T]], denoised signal.
         """
-        # [B, embeddings + spk]
+        # [B, C, T]
+        x = self.proj_signal(signal[:, None])
+        # [B, E]
         embed = torch.cat([self.embedder(steps), spk], dim=-1)
-        # [B, mel, T]
-        return self.unet(signal, embed, context)
+        # L x [B, C, T]
+        skips = 0.
+        for block in self.blocks:
+            # [B, C, T], [B, C, T]
+            x, skip = block(x, embed)
+            skips = skips + skip
+        # [B, T]
+        return self.proj_out(
+            skips * (len(self.blocks) ** -0.5)).squeeze(dim=1)
 
     def save(self, path: str, optim: Optional[torch.optim.Optimizer] = None):
         """Save the models.
