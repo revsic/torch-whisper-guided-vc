@@ -175,12 +175,22 @@ class WhisperGuidedVC(nn.Module):
         measure = torch.square(encoded - context).mean()
         # [B, T], compute score
         score = torch.autograd.grad(measure, signal)
-        # [B, T], convert to signal-domain
-        guide = (score * (1 - alphas_bar[steps, None]) + signal) / (
-            alphas_bar[steps, None].sqrt())
+        # since score(z_t) = (a_t * x(z_t) - z_t) / s_t ^ 2
+        # , signal-level classifier-guidance could be
+        # (s_t ^ 2 * ((a_t * x(z_t) - z_t) / s_t ^ 2 + g * grad) + z_t) / a_t
+        # = x(z_t) + s_t ^ 2 / a_t * g * grad
+        # where norm based guidance
+        #     g = ||s(z_t)|| / ||grad||
+        #       = a_t / s_t ^ 2 * ||x(z_t) - z_t / a_t|| / ||grad||
+        #     a_t = alphas_bar[steps].sqrt()
+        #     s_t = (1 - alphas_bar[steps]).sqrt()
+        # so that `x(z_t) + ||x(z_t) - z_t / a_t|| / ||grad|| * grad`
+        # [B]
+        gamma = (
+                denoised - signal * alphas_bar[steps, None].rsqrt()
+            ).norm(dim=-1) / score.norm(dim=-1)
         # [B, T], signal-level guidance
-        denoised = denoised + self.norm_scale * (
-            denoised.norm(dim=-1) / guide.norm(dim=-1)) * guide
+        denoised = denoised + self.norm_scale * gamma[:, None] * score
 
         # [B, T]
         mean = alphas_bar[prev, None].sqrt() * betas[steps, None] / (
