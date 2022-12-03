@@ -7,7 +7,7 @@ class Config:
         self.sr = 22050
 
         # diffusion steps
-        self.steps = 512
+        self.steps = 64
 
         # schedules
         self.internals = 1024
