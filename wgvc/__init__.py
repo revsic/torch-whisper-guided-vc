@@ -22,10 +22,14 @@ class WhisperGuidedVC(nn.Module):
             config: configurations.
         """
         super().__init__()
+        self.config = config
+        # alias
         self.w = config.w
         self.tau = config.tau
         self.norm_scale = config.norm_scale
         self.steps = config.steps
+
+        # models
         self.proj_signal = nn.utils.weight_norm(
             nn.Conv1d(1, config.channels, 1))
 
