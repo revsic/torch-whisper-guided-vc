@@ -171,11 +171,12 @@ class WhisperGuidedVC(nn.Module):
         measure = torch.square(encoded - context).mean()
         # [B, T], compute score
         score = torch.autograd.grad(measure, signal)
-        # [B, T], score to signal-level guidance
+        # [B, T], convert to signal-domain
+        guide = (score * (1 - alphas_bar[steps, None]) + signal) / (
+            alphas_bar[steps, None].sqrt())
+        # [B, T], signal-level guidance
         denoised = denoised + self.norm_scale * (
-                denoised.norm(dim=-1) / score.norm(dim=-1).clamp_min(1e-10)
-            ) * (score * (1 - alphas_bar[steps, None]) + signal) / (
-                alphas_bar[steps, None].sqrt())
+            denoised.norm(dim=-1) / guide.norm(dim=-1)) * guide
 
         # [B, T]
         mean = alphas_bar[prev, None].sqrt() * betas[steps, None] / (
