@@ -3,7 +3,6 @@ class Config:
     """
     def __init__(self):
         # out-defined
-        self.mel = 80
         self.num_spk = None
         self.sr = 22050
 
@@ -20,19 +19,29 @@ class Config:
         self.embeddings = 512
         self.mappings = 2
 
-        # unet
-        self.channels = 128
+        # block
+        self.channels = 64
         self.kernels = 3
-        self.stages = 4
-        self.blocks = 2
+        self.dilations = 2
 
-        # context
-        self.context = 1024
-        self.w2v_name = 'facebook/wav2vec2-large-xlsr-53'
-        self.w2v_lin = 12
+        # wavenet
+        self.cycles = 3
+        self.layers = 10
+
+        # whisper
+        self.whisper_name = 'openai/whisper-base'
+        # classifier-guidance, with norm-based scaling
+        # , default 0.3 on guided-tts 2
+        self.norm_scale = 0.3
 
         # speaker embedding
         self.spk = 512
 
-        # classifier-free guidance
+        # classifier-free guidance, speaker
+        # , default 1.0 on guided-tts 2
+        # , default 0.3 on classifier-free guidance
         self.w = 0.3
+
+        # prior temperature
+        # , default 1.5 on guided-tts 2
+        self.tau = 1.5
