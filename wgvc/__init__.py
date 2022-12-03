@@ -167,17 +167,15 @@ class WhisperGuidedVC(nn.Module):
 
         # [B, d_model, T // hop_length]
         encoded = self.whisper(signal)
-        # [], measure
+        # [], log-gaussian with constant std
         measure = torch.square(encoded - context).mean()
-        # measure = (
-        #     F.normalize(encoded, dim=1)
-        #     * F.normalize(context, dim=1)).sum(dim=1).mean()
         # [B, T], compute score
         score = torch.autograd.grad(measure, signal)
         # [B, T], score to signal-level guidance
         denoised = denoised + self.norm_scale * (
                 denoised.norm(dim=-1) / score.norm(dim=-1).clamp_min(1e-10)
-            ) * (score * std ** 2 + z_t) / alpha_t
+            ) * (score * (1 - alphas_bar[steps, None]) + signal) / (
+                alphas_bar[steps, None].sqrt())
 
         # [B, T]
         mean = alphas_bar[prev, None].sqrt() * betas[steps, None] / (
