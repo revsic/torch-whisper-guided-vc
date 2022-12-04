@@ -34,16 +34,13 @@ class WhisperWrapper(nn.Module):
             'window', torch.hann_window(self.feature_extractor.n_fft), persistent=False)
         self.eval()
 
-    def preproc(self, audio: torch.Tensor, resample: bool = True) -> torch.Tensor:
+    def preproc(self, audio: torch.Tensor) -> torch.Tensor:
         """Preprocess the input audios, convert to mel-spectrogram.
         Args:
             audio: [torch.float32; [B, T]], audio, [-1, 1]-ranged.
-            resample: whether resampling the audio or not.
         Returns:
             [torch.float32; [B, n_mels, T // hop_length]], log-mel spectrogram.
         """
-        if resample:
-            audio = self.resample(audio)
         # [B, n_fft // 2 + 1, T'(=T // hop_length)]
         stft = torch.stft(
             audio,
@@ -62,7 +59,6 @@ class WhisperWrapper(nn.Module):
             logmel, logmel.amax(dim=(-1, -2), keepdim=True) - 8.)
         return (logmel + 4.) / 4.
 
-    @torch.no_grad()
     def forward(self, audio: torch.Tensor) -> torch.Tensor:
         """Extract the features from audio.
         Args:
@@ -75,13 +71,15 @@ class WhisperWrapper(nn.Module):
         # alias
         n_samples = self.feature_extractor.n_samples
         hop_length = self.feature_extractor.hop_length
+        # resample
+        audio = self.resample(audio)
         # T
         timesteps = audio.size(1)
         assert timesteps <= n_samples, f'audio length should be shorter than {n_samples}'
         # [B, S], zero-padding
         audio = F.pad(audio, (0, n_samples - timesteps))
         # [B, n_mels, S // hop_length]
-        logmel = self.preproc(audio, resample=True)
+        logmel = self.preproc(audio)
         # [B, S // hop_length, d_model], encoder only
         outputs = self.model.encoder(logmel).last_hidden_state
         # [B, d_model, T // hop_length]
