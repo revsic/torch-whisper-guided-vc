@@ -11,16 +11,14 @@ from wgvc import WhisperGuidedVC
 class TrainingWrapper:
     """Training wrapper.
     """
-    def __init__(self, model: WhisperGuidedVC, config: Config, device: torch.device):
+    def __init__(self, model: WhisperGuidedVC, config: Config):
         """Initializer.
         Args:
             model: whisper-guided vc model.
             config: training configurations.
-            device: torch device.
         """
         self.model = model
         self.config = config
-        self.device = device
 
     def random_segment(self, speeches: np.ndarray, lengths: np.ndarray) \
             -> np.ndarray:
