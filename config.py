@@ -21,7 +21,7 @@ class TrainConfig:
 
         # loader settings
         self.split = -100
-        self.batch = 32
+        self.batch = 16
         self.shuffle = True
         self.num_workers = 4
         self.pin_memory = True
