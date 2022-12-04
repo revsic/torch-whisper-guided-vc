@@ -123,8 +123,7 @@ class Trainer:
                     self.train_log.add_scalar(
                         'common/learning-rate', self.optim.param_groups[0]['lr'], step)
 
-                    if (it + 1) % (len(self.loader) // 50) == 0:
-                        speech = speech[Trainer.LOG_IDX].cpu().numpy()
+                    if it % (len(self.loader) // 50) == 0:
                         self.train_log.add_image(
                             # [3, M, T]
                             'train/gt', self.mel_img(segment[Trainer.LOG_IDX].cpu().numpy()), step)
@@ -137,8 +136,9 @@ class Trainer:
                         # scheduler plot
                         fig = plt.figure()
                         ax = fig.add_subplot(1, 1, 1)
-                        ax.plot(aux['alphas_bar'])
-                        self.train_log.add_figure('train/alphas_bar', fig, step)
+                        ax.plot(aux['alphas-bar'])
+                        self.train_log.add_figure('train/alphas-bar', fig, step)
+
             losses = {key: [] for key in losses}
             with torch.no_grad():
                 for bunch in self.testloader:
@@ -163,8 +163,9 @@ class Trainer:
 
                 # inference
                 self.model.eval()
+                speech = torch.tensor(speech, device=self.device)
                 # [1, T x H]
-                _, [noise, *ir] = self.model(speech, sid[Trainer.LOG_IDX])
+                _, [noise, *ir] = self.model(speech[None], sid[Trainer.LOG_IDX, None])
                 self.model.train()
 
                 # noise plot
@@ -251,6 +252,8 @@ if __name__ == '__main__':
     # prepare datasets
     dataset = IDWrapper(WavDataset(
         speechset.datasets.LibriTTS(args.data_dir)))
+    # add num-speakers
+    config.model.num_spk = speechset.datasets.LibriTTS.count_speakers(args.data_dir)
 
     # model definition
     device = torch.device(
