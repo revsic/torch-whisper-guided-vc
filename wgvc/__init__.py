@@ -86,7 +86,7 @@ class WhisperGuidedVC(nn.Module):
             S x [np.float32; [B, T]], internal representations.
         """
         # [B, spk]
-        spk = self.spkembed(spkid)
+        spk = F.normalize(self.spkembed(spkid), dim=-1)
         # [B, T]
         signal = signal or torch.randn_like(context)
         # apply temperature
@@ -148,7 +148,7 @@ class WhisperGuidedVC(nn.Module):
             signal: [torch.float32; [B, T]], input signal, z_{t}.
             context: [torch.float32; [B, d_moel, T // hop_length]],
                 whisper encoded feature map for classifier-guidance.
-            spk: [torch.float32; [B, spk]], speaker vectors.
+            spk: [torch.float32; [B, spk]], speaker vectors, normalized.
             steps: [torch.long; [B]], t, diffusion steps, zero-based.
         Returns:
             [torch.float32; [B, T]], waveform mean, z_{t - 1}
@@ -162,8 +162,10 @@ class WhisperGuidedVC(nn.Module):
         alphas, alphas_bar = 1. - betas, torch.sigmoid(logsnr)
         # [B, T]
         cond = self.denoise(signal, spk, steps)
+        # [B, spk]
+        nullspk = F.normalize(self.nullspk, dim=-1)[None].repeat(bsize)
         # [B, T]
-        uncond = self.denoise(signal, self.nullspk[None].repeat(bsize), steps)
+        uncond = self.denoise(signal, nullspk, steps)
         # [B, T], classifier-free guidance
         denoised = (1 + self.w) * cond - self.w * uncond
         # [B], make one-based
