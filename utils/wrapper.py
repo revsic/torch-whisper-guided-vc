@@ -32,10 +32,11 @@ class TrainingWrapper:
         # alias
         seglen = self.config.train.seglen
         # [B]
-        start = np.random.randint(lengths - seglen)
+        start = np.random.randint(np.maximum(lengths - seglen, 1))
         # [B, seglen]
         return np.stack(
-            [n[s:s + seglen] for n, s in zip(speeches, start)])
+            [np.pad(n[s:s + seglen], [0, max(seglen - len(n), 0)])
+             for n, s in zip(speeches, start)])
 
     def compute_loss(self, sid: torch.Tensor, speeches: torch.Tensor) \
             -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
@@ -58,7 +59,7 @@ class TrainingWrapper:
         # [B, spk]
         spkembed = self.model.spkembed(sid)
         # for classifier-free guidance
-        null = torch.rand_like(sid) < self.config.train.null_prob
+        null = torch.rand(bsize, device=sid.device) < self.config.train.null_prob
         spkembed[null] = self.model.nullspk
         # normalize
         spkembed = F.normalize(spkembed, dim=-1)
