@@ -29,8 +29,9 @@ class WavDataset(SpeechSet):
         """
         # [B]
         lengths = np.array([len(s) for s in bunch])
+        # []
+        maxlen = lengths.max()
         # [B, T]
         speeches = np.stack([
-            np.pad(signal, [0, len_ - len(signal)])
-            for len_, signal in zip(lengths, bunch)])
+            np.pad(signal, [0, maxlen - len(signal)]) for signal in bunch])
         return lengths, speeches
