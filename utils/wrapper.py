@@ -64,9 +64,9 @@ class TrainingWrapper:
         # normalize
         spkembed = F.normalize(spkembed, dim=-1)
         # [B, seglen]
-        denoised = self.model.denoise(speeches, spkembed, steps)
+        denoised = self.model.denoise(base, spkembed, steps)
         # []
-        noise_estim = (base - denoised).abs().mean()
+        noise_estim = (speeches - denoised).abs().mean()
 
         # [1 + S]
         logsnr, _ = self.model.scheduler()
