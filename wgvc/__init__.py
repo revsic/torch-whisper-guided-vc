@@ -163,7 +163,7 @@ class WhisperGuidedVC(nn.Module):
         # [B, T]
         cond = self.denoise(signal, spk, steps)
         # [B, spk]
-        nullspk = F.normalize(self.nullspk, dim=-1)[None].repeat(bsize)
+        nullspk = F.normalize(self.nullspk, dim=-1)[None].repeat(bsize, 1)
         # [B, T]
         uncond = self.denoise(signal, nullspk, steps)
         # [B, T], classifier-free guidance
@@ -171,12 +171,16 @@ class WhisperGuidedVC(nn.Module):
         # [B], make one-based
         prev, steps = steps, steps + 1
 
-        # [B, d_model, T // hop_length]
-        encoded = self.whisper(signal)
-        # [], log-gaussian with constant std
-        measure = torch.square(encoded - context).mean()
+        # enable
+        with torch.enable_grad():
+            signal_ = signal.clone()
+            signal_.requires_grad_(True)
+            # [B, d_model, T // hop_length]
+            encoded = self.whisper(signal_)
+            # [], log-gaussian with constant std
+            measure = torch.square(encoded - context).mean()
         # [B, T], compute score
-        score = torch.autograd.grad(measure, signal)
+        score, = torch.autograd.grad(measure, signal_)
         # since score(z_t) = (a_t * x(z_t) - z_t) / s_t ^ 2
         # , signal-level classifier-guidance could be
         # (s_t ^ 2 * ((a_t * x(z_t) - z_t) / s_t ^ 2 + g * grad) + z_t) / a_t
