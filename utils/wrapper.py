@@ -65,11 +65,16 @@ class TrainingWrapper:
         spkembed = F.normalize(spkembed, dim=-1)
         # [B, seglen]
         denoised = self.model.denoise(base, spkembed, steps)
-        # []
-        noise_estim = (speeches - denoised).abs().mean()
+        # [B]
+        noise_estim = (speeches - denoised).abs().mean(dim=-1)
 
         # [1 + S]
         logsnr, _ = self.model.scheduler()
+        # [B]
+        snr_diff = logsnr[steps].exp() - logsnr[steps + 1].exp()
+        # []
+        diffusion_loss = (snr_diff * noise_estim).mean()
+
         # [1 + S]
         alphas_bar = torch.sigmoid(logsnr)
         # [], prior loss
@@ -78,9 +83,11 @@ class TrainingWrapper:
                 torch.clamp_min(alphas_bar[0], 1e-7))
 
         # []
-        loss = noise_estim - schedule_loss
+        loss = diffusion_loss - schedule_loss
         losses = {
-            'noise-estim': noise_estim.item(),
+            'snr_diff': snr_diff.mean().item(),
+            'diffusion-loss': diffusion_loss.item(),
+            'noise-estim': noise_estim.mean().item(),
             'schedule-loss': schedule_loss.item()}
         return loss, losses, {
             'base': base.cpu().detach().numpy(),
