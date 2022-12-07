@@ -37,7 +37,7 @@ Checkpoint will be written on TrainConfig.ckpt, tensorboard summary on TrainConf
 tensorboard --logdir ./log
 ```
 
-[TODO] To inference model, run [inference.py](./inference.py)
+To inference model, run [inference.py](./inference.py)
 
 [TODO] Pretrained checkpoints are relased on [releases](https://github.com/revsic/torch-whisper-guided-vc/releases).
 
