@@ -64,8 +64,9 @@ class WhisperWrapper(nn.Module):
         Args:
             audio: [torch.float32; [B, T]], audio, [-1, 1]-ranged.
         Returns:
-            [torch.float32; [B, d_model, T // hop_length]], encoded features,
-                where d_model = `self.model.config.d_model`
+            [torch.float32; [B, d_model, T' // hop_length]], encoded features,
+                where T' = T / `self.sr` * `self.feature_extractor.sampling_rate`
+                      d_model = `self.model.config.d_model`
                       hop_length = `self.feature_extractor.hop_length`
         """
         # alias
