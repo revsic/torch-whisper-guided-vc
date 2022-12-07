@@ -10,9 +10,8 @@ class Config:
         self.steps = 64
 
         # schedules
-        self.internals = 1024
-        self.logit_max = 10
-        self.logit_min = -10
+        self.sched_start = 1e-4
+        self.sched_end = 0.05
 
         # embedder
         self.pe = 128

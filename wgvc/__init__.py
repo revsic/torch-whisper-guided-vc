@@ -41,9 +41,8 @@ class WhisperGuidedVC(nn.Module):
 
         self.scheduler = Scheduler(
             config.steps,
-            config.internals,
-            config.logit_min,
-            config.logit_max)
+            config.sched_start,
+            config.sched_end)
 
         self.spkembed = nn.Embedding(config.num_spk, config.spk)
         # for classifier-free guidance
