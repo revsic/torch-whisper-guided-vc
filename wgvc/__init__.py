@@ -9,6 +9,7 @@ from tqdm import tqdm
 from .config import Config
 from .embedder import Embedder
 from .scheduler import Scheduler
+from .upsampler import Upsampler
 from .wavenet import WaveNetBlock
 from .whisper import WhisperWrapper
 
@@ -48,10 +49,15 @@ class WhisperGuidedVC(nn.Module):
         # for classifier-free guidance
         self.register_buffer('nullspk', torch.randn(config.spk))
 
+        self.whisper = WhisperWrapper(
+            config.whisper_name,
+            config.sr)
+
         self.blocks = nn.ModuleList([
             WaveNetBlock(
                 config.channels,
                 config.embeddings + config.spk,
+                self.whisper.model.config.d_model,
                 config.kernels,
                 config.dilations ** j)
             for _ in range(config.cycles)
@@ -64,9 +70,11 @@ class WhisperGuidedVC(nn.Module):
             nn.utils.weight_norm(nn.Conv1d(config.channels, 1, 1)),
             nn.Tanh())
 
-        self.whisper = WhisperWrapper(
-            config.whisper_name,
-            config.sr)
+        self.upsampler = Upsampler(
+            self.whisper.model.config.d_model,
+            config.upkernels,
+            config.upscales,
+            config.leak)
 
     def forward(self,
                 context: torch.Tensor,
@@ -90,8 +98,12 @@ class WhisperGuidedVC(nn.Module):
         signal = signal or torch.randn_like(context)
         # apply temperature
         signal = signal * self.tau ** -0.5
-        # [B, d_model, T // hop_length]
+        # [B, d_model, T' // hop_length]
         context = self.whisper(context)
+        # [B, d_model, T']
+        context = self.upsampler(context)
+        # [B, d_model, T]
+        context = F.interpolate(context, signal.shape[-1], mode='linear')
         # S x [B, mel, T]
         ir = [signal.cpu().detach().numpy()]
         # zero-based step
@@ -145,8 +157,7 @@ class WhisperGuidedVC(nn.Module):
         """Inverse process, single step denoise.
         Args:
             signal: [torch.float32; [B, T]], input signal, z_{t}.
-            context: [torch.float32; [B, d_moel, T // hop_length]],
-                whisper encoded feature map for classifier-guidance.
+            context: [torch.float32; [B, d_model, T]], contextual feature
             spk: [torch.float32; [B, spk]], speaker vectors, normalized.
             steps: [torch.long; [B]], t, diffusion steps, zero-based.
         Returns:
@@ -160,43 +171,15 @@ class WhisperGuidedVC(nn.Module):
         # [S + 1]
         alphas, alphas_bar = 1. - betas, torch.sigmoid(logsnr)
         # [B, T]
-        cond = self.denoise(signal, spk, steps)
+        cond = self.denoise(signal, context, spk, steps)
         # [B, spk]
         nullspk = F.normalize(self.nullspk, dim=-1)[None].repeat(bsize, 1)
         # [B, T]
-        uncond = self.denoise(signal, nullspk, steps)
+        uncond = self.denoise(signal, context, nullspk, steps)
         # [B, T], classifier-free guidance
         denoised = (1 + self.w) * cond - self.w * uncond
         # [B], make one-based
         prev, steps = steps, steps + 1
-
-        # enable
-        with torch.enable_grad():
-            signal_ = signal.clone()
-            signal_.requires_grad_(True)
-            # [B, d_model, T // hop_length]
-            encoded = self.whisper(signal_)
-            # [], log-gaussian with constant std
-            measure = torch.square(encoded - context).mean()
-        # [B, T], compute score
-        score, = torch.autograd.grad(measure, signal_)
-        # since score(z_t) = (a_t * x(z_t) - z_t) / s_t ^ 2
-        # , signal-level classifier-guidance could be
-        # (s_t ^ 2 * ((a_t * x(z_t) - z_t) / s_t ^ 2 + g * grad) + z_t) / a_t
-        # = x(z_t) + s_t ^ 2 / a_t * g * grad
-        # where norm based guidance
-        #     g = ||s(z_t)|| / ||grad||
-        #       = a_t / s_t ^ 2 * ||x(z_t) - z_t / a_t|| / ||grad||
-        #     a_t = alphas_bar[steps].sqrt()
-        #     s_t = (1 - alphas_bar[steps]).sqrt()
-        # so that `x(z_t) + ||x(z_t) - z_t / a_t|| / ||grad|| * grad`
-        # [B]
-        gamma = (
-                denoised - signal * alphas_bar[steps, None].rsqrt()
-            ).norm(dim=-1) / score.norm(dim=-1)
-        # [B, T], signal-level guidance
-        denoised = denoised + self.norm_scale * gamma[:, None] * score
-
         # [B, T]
         mean = alphas_bar[prev, None].sqrt() * betas[steps, None] / (
                 1 - alphas_bar[steps, None]) * denoised + \
@@ -208,12 +191,14 @@ class WhisperGuidedVC(nn.Module):
 
     def denoise(self,
                 signal: torch.Tensor,
+                context: torch.Tensor,
                 spk: torch.Tensor,
                 steps: torch.Tensor) -> torch.Tensor:
         """Denoise the signal w.r.t. outpart signal.
         Args:
             signal: [torch.float32; [B, T]], input signal.
             spk: [torch.float32; [B, spk]], speaker vectors.
+            context: [torch.float32; [B, d_model, T]], contextual feature.
             steps: [torch.long; [B]], diffusion steps, zero-based.
         Returns:
             [torch.float32; [B, T]], denoised signal.
@@ -226,7 +211,7 @@ class WhisperGuidedVC(nn.Module):
         skips = 0.
         for block in self.blocks:
             # [B, C, T], [B, C, T]
-            x, skip = block(x, embed)
+            x, skip = block(x, embed, context)
             skips = skips + skip
         # [B, T]
         return self.proj_out(

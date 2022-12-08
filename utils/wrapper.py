@@ -47,8 +47,12 @@ class TrainingWrapper:
         Returns:
             loss and dictionaries.
         """
-        # B
-        bsize, = sid.shape
+        # pre-compute
+        with torch.no_grad():
+            # [B, d_model, T' / hop_length]
+            context = self.model.whisper(speeches)
+        # B, T
+        bsize, timesteps, = speeches.shape
         # [B], zero-based
         steps = torch.randint(
             self.config.model.steps, (bsize,), device=sid.device)
@@ -63,8 +67,12 @@ class TrainingWrapper:
         spkembed[null] = self.model.nullspk
         # normalize
         spkembed = F.normalize(spkembed, dim=-1)
+        # [B, d_model, T']
+        context = self.model.upsampler(context)
+        # [B, d_model, T]
+        context = F.interpolate(context, timesteps, mode='linear')
         # [B, seglen]
-        denoised = self.model.denoise(base, spkembed, steps)
+        denoised = self.model.denoise(base, context, spkembed, steps)
         # []
         noise_estim = (speeches - denoised).abs().mean()
 

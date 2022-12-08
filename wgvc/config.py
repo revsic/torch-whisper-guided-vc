@@ -33,6 +33,12 @@ class Config:
         # , default 0.3 on guided-tts 2
         self.norm_scale = 0.3
 
+        # upsampler
+        self.upkernels = 5
+        # prod to 160, STFT hop-length of `openai/whisper-base`
+        self.upscales = [5, 4, 4, 2]
+        self.leak = 0.2
+
         # speaker embedding
         self.spk = 512
 

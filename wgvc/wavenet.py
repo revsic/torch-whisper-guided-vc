@@ -8,12 +8,14 @@ class WaveNetBlock(nn.Module):
     def __init__(self,
                  channels: int,
                  embed: int,
+                 seq: int,
                  kernels: int,
                  dilations: int):
         """Initializer.
         Args:
             channels: size of the input channels.
             embed: size of the embedding channels.
+            seq: size of the sequential conditions.
             kernels: size of the convolutional kernel.
             dilations: dilation rates of contoluion.
         """
@@ -25,17 +27,23 @@ class WaveNetBlock(nn.Module):
 
         self.proj_embed = nn.utils.weight_norm(
             nn.Linear(embed, channels, bias=False))
+        self.proj_seq = nn.utils.weight_norm(
+            nn.Conv1d(seq, channels * 2, 1, bias=False))
 
         self.proj_res = nn.utils.weight_norm(
             nn.Conv1d(channels, channels, 1))
         self.proj_skip = nn.utils.weight_norm(
             nn.Conv1d(channels, channels, 1))
 
-    def forward(self, inputs: torch.Tensor, embed: torch.Tensor) -> torch.Tensor:
+    def forward(self,
+                inputs: torch.Tensor,
+                embed: torch.Tensor,
+                seq: torch.Tensor) -> torch.Tensor:
         """Pass to the wavenet block.
         Args:
             inputs: [torch.float32; [B, C, T]], input tensor.
-            embed: [torch.float32; [B, E]], auxiliary embeddings.
+            embed: [torch.float32; [B, embed]], auxiliary embeddings.
+            seq: [torch.float32; [B, seq, T]], auxiliary sequential inputs.
         Returns:
             residual: [torch.float32; [B, C, T]], residually connected.
             skip: [torch.float32; [B, C, T]], skip connection purposed.
@@ -43,7 +51,7 @@ class WaveNetBlock(nn.Module):
         # [B, C, T]
         x = inputs + self.proj_embed(embed)[..., None]
         # [B, C x 2, T]
-        x = self.conv(x)
+        x = self.conv(x) + self.proj_seq(seq)
         # [B, C, T]
         gate, context = x.chunk(2, dim=1)
         # [B, C, T]
