@@ -1,4 +1,4 @@
-from typing import Dict, Optional
+from typing import Optional
 
 import torch
 import torch.nn as nn
@@ -23,15 +23,19 @@ class WhisperWrapper(nn.Module):
         super().__init__()
         name = name or WhisperWrapper.DEFAULT
         self.model = WhisperModel.from_pretrained(name)
-        self.feature_extractor = WhisperFeatureExtractor.from_pretrained(name)
+        feature_extractor = WhisperFeatureExtractor.from_pretrained(name)
+        # alias
+        self.fft = feature_extractor.n_fft
+        self.hop = feature_extractor.hop_length
+        self.samples = feature_extractor.n_samples
 
         self.sr = sr
-        self.resample = torchaudio.transforms.Resample(sr, self.feature_extractor.sampling_rate)
-        # [n_mels, n_fft // 2 + 1], mel filterbanks
+        self.resample = torchaudio.transforms.Resample(sr, feature_extractor.sampling_rate)
+        # [mel, fft // 2 + 1], mel filterbanks
         self.register_buffer(
-            'fbank', torch.tensor(self.feature_extractor.mel_filters), persistent=False)
+            'fbank', torch.tensor(feature_extractor.mel_filters), persistent=False)
         self.register_buffer(
-            'window', torch.hann_window(self.feature_extractor.n_fft), persistent=False)
+            'window', torch.hann_window(feature_extractor.n_fft), persistent=False)
         self.eval()
 
     def preproc(self, audio: torch.Tensor) -> torch.Tensor:
@@ -44,8 +48,8 @@ class WhisperWrapper(nn.Module):
         # [B, n_fft // 2 + 1, T'(=T // hop_length)]
         stft = torch.stft(
             audio,
-            self.feature_extractor.n_fft,
-            self.feature_extractor.hop_length,
+            self.fft,
+            self.hop,
             window=self.window,
             center=True,
             pad_mode='reflect',
@@ -64,27 +68,23 @@ class WhisperWrapper(nn.Module):
         Args:
             audio: [torch.float32; [B, T]], audio, [-1, 1]-ranged.
         Returns:
-            [torch.float32; [B, d_model, T' // hop_length]], encoded features,
-                where T' = T / `self.sr` * `self.feature_extractor.sampling_rate`
-                      d_model = `self.model.config.d_model`
-                      hop_length = `self.feature_extractor.hop_length`
+            [torch.float32; [B, d_model, T' // hop]], encoded features,
+                where T' = T / sr * `WhisperFeatureExtractor.sampling_rate`
+                      d_model = `WhisperModel.config.d_model`
         """
-        # alias
-        n_samples = self.feature_extractor.n_samples
-        hop_length = self.feature_extractor.hop_length
         # resample
         audio = self.resample(audio)
         # T
         timesteps = audio.size(1)
-        assert timesteps <= n_samples, f'audio length should be shorter than {n_samples}'
+        assert timesteps <= self.samples, f'audio length should be shorter than {self.samples}'
         # [B, S], zero-padding
-        audio = F.pad(audio, (0, n_samples - timesteps))
+        audio = F.pad(audio, (0, self.samples - timesteps))
         # [B, n_mels, S // hop_length]
         logmel = self.preproc(audio)
         # [B, S // hop_length, d_model], encoder only
         outputs = self.model.encoder(logmel).last_hidden_state
         # [B, d_model, T // hop_length]
-        return outputs[:, :timesteps // hop_length].transpose(1, 2)
+        return outputs[:, :timesteps // self.hop].transpose(1, 2)
 
     def train(self, mode: bool = True):
         """Support only evaluation
@@ -96,9 +96,12 @@ class WhisperWrapper(nn.Module):
             # super call
             super().train(False)
 
-    def load_state_dict(self,
-                        state_dict: Dict[str, torch.Tensor],
-                        strict: bool = True):
+    def state_dict(self, *args, **kwargs):
+        """Do not return the state dict.
+        """
+        return {}
+
+    def _load_from_state_dict(self, *args, **kwargs):
         """Do not load state dict.
         """
         pass
