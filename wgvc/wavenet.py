@@ -31,9 +31,9 @@ class WaveNetBlock(nn.Module):
             nn.Conv1d(seq, channels * 2, 1, bias=False))
 
         self.proj_res = nn.utils.weight_norm(
-            nn.Conv1d(channels, channels, 1))
+            nn.Conv1d(channels, channels, 1, bias=False))
         self.proj_skip = nn.utils.weight_norm(
-            nn.Conv1d(channels, channels, 1))
+            nn.Conv1d(channels, channels, 1, bias=False))
 
     def forward(self,
                 inputs: torch.Tensor,

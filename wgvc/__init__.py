@@ -62,6 +62,8 @@ class WhisperGuidedVC(nn.Module):
                 config.dilations ** j)
             for _ in range(config.cycles)
             for j in range(config.layers)])
+        
+        self.bias = nn.Parameter(torch.zeros(config.channels, 1))
 
         self.proj_out = nn.Sequential(
             nn.ReLU(),
@@ -215,7 +217,7 @@ class WhisperGuidedVC(nn.Module):
             skips = skips + skip
         # [B, T]
         return self.proj_out(
-            skips * (len(self.blocks) ** -0.5)).squeeze(dim=1)
+            skips * (len(self.blocks) ** -0.5) + self.bias).squeeze(dim=1)
 
     def save(self, path: str, optim: Optional[torch.optim.Optimizer] = None):
         """Save the models.
