@@ -37,7 +37,7 @@ class AugmentedWhisper:
             rep = sr[:, -1:].repeat(1, self.mel - size)
             # [S, mel]
             sr = torch.cat([sr, rep + torch.randn_like(rep) * self.std], dim=-1)
-        return sr
+        return sr.T
 
     def augment(self, mel: torch.Tensor, sizes: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Spectrogram resizing based augmentation.
@@ -70,7 +70,7 @@ class AugmentedWhisper:
         # T
         _, timesteps = audio.shape
         # [B, S], zero-padding
-        audio = F.pad(audio, (0, self.samples - timesteps))
+        audio = F.pad(audio, (0, self.whisper.samples - timesteps))
         # [B, mel, S // hop]
         logmel = self.whisper.preproc(audio)
         # [B, mel, S // hop], augmentatoin

@@ -29,7 +29,7 @@ class TrainingWrapper:
         # windows
         self.windows = [
             torch.hann_window(fft, device=device)
-            for fft in config.fft]
+            for fft in config.train.fft]
 
     def random_segment(self, speeches: np.ndarray, lengths: np.ndarray) \
             -> np.ndarray:
@@ -42,53 +42,63 @@ class TrainingWrapper:
         """
         # alias
         seglen = self.config.train.seglen
+        # B
+        bsize, = lengths.shape
         # [B]
-        start = np.random.randint(np.maximum(lengths - seglen, 1))
+        start = torch.rand(bsize, device=self.device) * (lengths - seglen).clamp_min(0)
         # [B, seglen]
-        return np.stack(
-            [np.pad(n[s:s + seglen], [0, max(seglen - len(n), 0)])
-             for n, s in zip(speeches, start)])
+        return torch.stack([
+            F.pad(n[s:s + seglen], [0, max(seglen - len(n), 0)])
+            for n, s in zip(speeches, start.long())])
 
     def compute_loss(self, sid: torch.Tensor, speeches: torch.Tensor) \
             -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """Compute the loss.
         Args:
             sid: [torch.long; [B]], speaker ids.
-            speeches: [torch.float32; [B, seglen]], segmetned speech.
+            speeches: [torch.float32; [B, T]], segmetned speech.
         Returns:
             loss and dictionaries.
         """
         # pre-compute
         with torch.no_grad():
-            # [B, d_model, T' / hop]
-            context = self.a_whisper.forward(speeches)
-            # [B, S]
-            pitch = self.model.analyze_pitch(speeches)
+            nulls = self.config.train.null_size
+            # B, T
+            bsize, seglen = speeches.shape
+            # [B - nulls, T]
+            seg_c = speeches[nulls:]
+            # [B - nulls, d_model, T' / hop]
+            context = self.a_whisper.forward(seg_c)
+            # [B - nulls, S]
+            pitch = self.model.analyze_pitch(seg_c)
 
-        # B, T
-        bsize, timesteps, = speeches.shape
-        # [B, aux, seglen]
-        context = self.model.blend(context, pitch)[..., :timesteps]
+        # [B - nulls, aux, T - alpha]
+        context = self.model.blend(context, pitch)
 
+        # B
+        bsize, = sid.shape
         # [B], zero-based
         steps = torch.randint(
             self.config.model.steps, (bsize,), device=self.device)
-        # [B, seglen], [B]
+        # [B, T], [B]
         base_mean, base_std = self.model.diffusion(speeches, steps)
-        # [B, seglen]
+        # [B, T]
         base = base_mean + torch.randn_like(base_mean) * base_std[:, None]
 
-        nulls = self.config.train.null_size
-        # [1, spk]
-        nullembed = F.normalize(self.model.nullspk[None], dim=-1)
+        # [nulls, spk]
+        nullembed = F.normalize(self.model.nullspk[None], dim=-1).repeat(nulls, 1)
         # uncondition
         uncond = self.model.denoise(base[:nulls], nullembed, steps[:nulls])
 
-        # [B, spk]
-        spkembed = F.normalize(self.model.spkembed(sid), dim=-1)
+        # T - alpha
+        _, _, ctxsteps = context.shape
+        # [B - nulls, spk]
+        spkembed = F.normalize(self.model.spkembed(sid[nulls:]), dim=-1)
         # condition
         cond = self.model.denoise(
-            base[nulls:], spkembed[nulls:], steps[nulls:], context=context[nulls:])
+            base[nulls:, :ctxsteps], spkembed, steps[nulls:], context=context)
+        # [B - nulls, T]
+        cond = F.pad(cond, [0, seglen - ctxsteps])
 
         # [B, T]
         denoised = torch.cat([uncond, cond], dim=0)

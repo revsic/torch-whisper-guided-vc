@@ -73,6 +73,12 @@ class WhisperGuidedVC(nn.Module):
 
         self.factor = config.sr / self.whisper.resample.new_freq
 
+        self.upsampler = Upsampler(
+            config.aux,
+            config.upkernels,
+            config.upscales,
+            config.leak)
+
         self.blocks = nn.ModuleList([
             WaveNetBlock(
                 config.channels,
@@ -91,12 +97,6 @@ class WhisperGuidedVC(nn.Module):
             nn.ReLU(),
             nn.utils.weight_norm(nn.Conv1d(config.channels, 1, 1)),
             nn.Tanh())
-
-        self.upsampler = Upsampler(
-            self.whisper.model.config.d_model,
-            config.upkernels,
-            config.upscales,
-            config.leak)
 
     def analyze_pitch(self, signal: torch.Tensor) -> torch.Tensor:
         """Analyze the relative pitch in log-2 scale.
