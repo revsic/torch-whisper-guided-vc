@@ -24,8 +24,7 @@ class TrainConfig:
         self.fft = [2048, 1024, 256, 64]
 
         # loader settings
-        self.split = -100
-        self.batch = 16
+        self.batch = 24
         self.shuffle = True
         self.num_workers = 4
         self.pin_memory = True

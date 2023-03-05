@@ -102,8 +102,14 @@ class TrainingWrapper:
 
         # [B, T]
         denoised = torch.cat([uncond, cond], dim=0)
-        # []
-        noise_estim = (speeches - denoised).abs().mean()
+        # [B]
+        noise_estim = (speeches - denoised).abs()
+
+        # metric purpose
+        estim_u, estim_c = noise_estim.split([nulls, bsize - nulls], dim=0)
+        estim_u, estim_c = estim_u.mean().item(), estim_c.mean().item()
+        # [B]
+        noise_estim = noise_estim.mean()
 
         # pack
         pack = torch.cat([speeches, denoised], dim=0)
@@ -118,12 +124,16 @@ class TrainingWrapper:
             fft_s, fft_d = stft.clamp_min(1e-5).log().chunk(2, dim=0)
             # []
             mss = mss + (fft_s - fft_d).square().mean()
+        # mean
+        mss = mss / len(self.windows)
 
         # []
         loss = noise_estim + mss
         losses = {
-            'diffusion-loss': noise_estim.item(),
-            'noise-estim': noise_estim.item(),
+            'loss': loss.item(),
+            'estim': noise_estim.item(),
+            'estim-c': estim_c,
+            'estim-u': estim_u,
             'mss': mss.item()}
         return loss, losses, {
             'base': base.cpu().detach().numpy(),
