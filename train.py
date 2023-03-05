@@ -11,12 +11,11 @@ from torch.utils.tensorboard import SummaryWriter
 
 from config import Config
 from wgvc import WhisperGuidedVC
-from utils.wavdata import WavDataset
+from utils.realtime import RealtimeWavDataset
 from utils.wrapper import TrainingWrapper
 
 import speechset
-from speechset.utils.melstft import MelSTFT
-from speechset.utils.wrapper import IDWrapper
+
 
 class Trainer:
     """TacoSpawn trainer.
@@ -27,13 +26,13 @@ class Trainer:
 
     def __init__(self,
                  model: WhisperGuidedVC,
-                 dataset: WavDataset,
+                 dataset: speechset.speeches.SpeechSet,
                  config: Config,
                  device: torch.device):
         """Initializer.
         Args:
             model: whisper-guided VC models.
-            dataset: dataset.
+            dataset, testset: dataset.
             config: unified configurations.
             device: target computing device.
         """
@@ -41,26 +40,18 @@ class Trainer:
         self.dataset = dataset
         self.config = config
         self.device = device
-        # train-test split
-        self.testset = self.dataset.split(config.train.split)
 
+        def identity(x): return x
         self.loader = torch.utils.data.DataLoader(
             self.dataset,
             batch_size=config.train.batch,
             shuffle=config.train.shuffle,
-            collate_fn=self.dataset.collate,
-            num_workers=config.train.num_workers,
-            pin_memory=config.train.pin_memory)
-
-        self.testloader = torch.utils.data.DataLoader(
-            self.testset,
-            batch_size=config.train.batch,
-            collate_fn=self.dataset.collate,
+            collate_fn=identity,
             num_workers=config.train.num_workers,
             pin_memory=config.train.pin_memory)
 
         # training wrapper
-        self.wrapper = TrainingWrapper(model, config)
+        self.wrapper = TrainingWrapper(model, config, device)
 
         self.optim = torch.optim.Adam(
             self.model.parameters(),
@@ -75,7 +66,7 @@ class Trainer:
         self.ckpt_path = os.path.join(
             config.train.ckpt, config.train.name, config.train.name)
 
-        self.melspec = MelSTFT(config.data)
+        self.melspec = speechset.utils.MelSTFT(speechset.Config())
         self.cmap = np.array(plt.get_cmap('viridis').colors)
 
     def train(self, epoch: int = 0):
@@ -89,14 +80,12 @@ class Trainer:
             with tqdm.tqdm(total=len(self.loader), leave=False) as pbar:
                 for it, bunch in enumerate(self.loader):
                     # [B], [B], [B, T]
-                    sid, lengths, speeches = bunch
+                    sid, speeches, lengths = self.dataset.collate(bunch)
                     # [B]
                     sid = torch.tensor(sid, device=self.device)
                     # [B, seglen]
-                    segment = torch.tensor(
-                        self.wrapper.random_segment(speeches, lengths),
-                        device=self.device)
-                    
+                    segment = self.wrapper.random_segment(speeches, lengths)
+                    # compute loss
                     loss, losses, aux = self.wrapper.compute_loss(sid, segment)
                     # update
                     self.optim.zero_grad()
@@ -133,51 +122,33 @@ class Trainer:
                         self.train_log.add_image(
                             # [3, M, T]
                             'train/p(z_{0}|z_{t})', self.mel_img(aux['denoised'][Trainer.LOG_IDX]), step)
-                        # scheduler plot
-                        fig = plt.figure()
-                        ax = fig.add_subplot(1, 1, 1)
-                        ax.plot(aux['alphas-bar'])
-                        self.train_log.add_figure('train/alphas-bar', fig, step)
+
+            self.model.save(f'{self.ckpt_path}_{epoch}.ckpt', self.optim)
 
             losses = {key: [] for key in losses}
             with torch.no_grad():
-                for bunch in self.testloader:
-                    sid, lengths, speeches = bunch
-                    sid = torch.tensor(sid, device=self.device)
-                    segment = torch.tensor(
-                        self.wrapper.random_segment(speeches, lengths),
-                        device=self.device)
-                    _, losses_, _ = self.wrapper.compute_loss(sid, segment)
-                    for key, val in losses_.items():
-                        losses[key].append(val)
-                # test log
-                for key, val in losses.items():
-                    self.test_log.add_scalar(f'loss/{key}', np.mean(val), step)
-
-                maxlen = Trainer.EVAL_MAX_SEC * self.config.data.sr
+                maxlen = int(Trainer.EVAL_MAX_SEC * self.config.model.sr)
                 # clamp
                 timesteps = min(lengths[Trainer.LOG_IDX].item(), maxlen)
                 # [T], gt plot
                 speech = speeches[Trainer.LOG_IDX, :timesteps]
-                self.test_plot('gt', speech, step)
+                self.test_plot('test/gt', speech.cpu().numpy(), step)
 
                 # inference
                 self.model.eval()
-                speech = torch.tensor(speech, device=self.device)
                 # [1, T x H]
-                _, [noise, *ir] = self.model(speech[None], sid[Trainer.LOG_IDX, None])
+                signal, [_, *ir] = self.model(
+                    speech[None], sid[Trainer.LOG_IDX, None], use_tqdm=True)
                 self.model.train()
 
-                # noise plot
-                self.test_plot(
-                    f'z_{{{self.config.model.steps}}}', noise.squeeze(0), step)
-                # intermediate representation
-                for i, signal in enumerate(ir[::-1]):
-                    if i % Trainer.EVAL_INTVAL == 0:
-                        self.test_plot(
-                            f'p(z_{{{i}}}|z_{{{i + 1}}}))', signal.squeeze(0), step)
+                self.test_plot('test/synth', signal, step)
 
-            self.model.save(f'{self.ckpt_path}_{epoch}.ckpt', self.optim)
+                # intermediate representation
+                intval = len(ir) // Trainer.EVAL_INTVAL
+                for i, signal in enumerate(ir[::-1]):
+                    if i % intval == 0:
+                        self.test_plot(
+                            f'gt-aux/p(z_{{{i}}}|z_{{{i + 1}}}))', signal.squeeze(0), step)
 
     def mel_img(self, signal: np.ndarray) -> np.ndarray:
         """Generate mel-spectrogram images.
@@ -208,7 +179,7 @@ class Trainer:
         self.test_log.add_image(
             f'test/image/{name}', self.mel_img(signal), step)
         self.test_log.add_audio(
-            f'test/audio/{name}', signal[None], step, sample_rate=self.config.data.sr)
+            f'test/audio/{name}', signal[None], step, sample_rate=self.config.model.sr)
 
 
 if __name__ == '__main__':
@@ -249,19 +220,24 @@ if __name__ == '__main__':
     if not os.path.exists(ckpt_path):
         os.makedirs(ckpt_path)
 
-    # prepare datasets
-    dataset = IDWrapper(WavDataset(
-        speechset.datasets.LibriTTS(args.data_dir)))
-    # add num-speakers
-    config.model.num_spk = speechset.datasets.LibriTTS.count_speakers(args.data_dir)
-
-    # model definition
+    sr = config.model.sr
     device = torch.device(
         'cuda:0' if torch.cuda.is_available() else 'cpu')
+    # prepare datasets
+    readers = speechset.datasets.ConcatReader([
+        speechset.datasets.VCTK('./datasets/VCTK-Corpus', sr),
+        speechset.datasets.LibriTTS('./datasets/LibriTTS/train-clean-100', sr),
+        speechset.datasets.LibriTTS('./datasets/LibriTTS/train-clean-360', sr)])
+    config.model.num_spk = len(readers.speakers())
+    print(f'[*] speakers: {config.model.num_spk}')
+
+    trainset = speechset.utils.IDWrapper(RealtimeWavDataset(readers, device))
+
+    # model definition
     model = WhisperGuidedVC(config.model)
     model.to(device)
 
-    trainer = Trainer(model, dataset, config, device)
+    trainer = Trainer(model, trainset, config, device)
 
     # loading
     if args.load_epoch > 0:

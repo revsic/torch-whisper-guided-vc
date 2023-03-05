@@ -158,11 +158,15 @@ class WhisperGuidedVC(nn.Module):
 
         # [B, S]
         pitch = self.analyze_pitch(context)
-        # [B, d_model, T' // hop]
+        # [B, d_model, _ // hop]
         context = self.whisper(context)
-        # [B, aux, T]
-        context = self.blend(context, pitch)[..., :timesteps]
-        # S x [B, T]
+        # [B, aux, T']
+        context = self.blend(context, pitch)
+        # _, _, T'
+        _, _, ctxstep = context.shape
+        # [B, T']
+        signal = signal[:, :ctxstep]
+        # S x [B, T']
         ir = [signal.cpu().detach().numpy()]
         # zero-based step
         ranges = range(self.steps - 1, -1, -1)
@@ -171,9 +175,9 @@ class WhisperGuidedVC(nn.Module):
         for step in ranges:
             # [1]
             step = torch.tensor([step], device=signal.device)
-            # [B, T], [B]
+            # [B, T'], [B]
             mean, std = self.inverse(signal, context, spk, step)
-            # [B, T]
+            # [B, T']
             signal = mean + torch.randn_like(mean) * std[:, None]
             ir.append(signal.cpu().detach().numpy())
         # [B, T]
