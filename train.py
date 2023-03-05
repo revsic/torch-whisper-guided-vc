@@ -141,7 +141,7 @@ class Trainer:
                     speech[None], sid[Trainer.LOG_IDX, None], use_tqdm=True)
                 self.model.train()
 
-                self.test_plot('test/synth', signal, step)
+                self.test_plot('test/synth', signal.cpu().numpy(), step)
 
                 # intermediate representation
                 intval = len(ir) // Trainer.EVAL_INTVAL
