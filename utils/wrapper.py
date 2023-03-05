@@ -26,10 +26,6 @@ class TrainingWrapper:
         # for augmentation purpose
         self.a_whisper = AugmentedWhisper(
             model.whisper, config.train.smin, config.train.smax, config.train.std)
-        # windows
-        self.windows = [
-            torch.hann_window(fft, device=device)
-            for fft in config.train.fft]
 
     def random_segment(self, speeches: np.ndarray, lengths: np.ndarray) \
             -> np.ndarray:
@@ -111,30 +107,13 @@ class TrainingWrapper:
         # [B]
         noise_estim = noise_estim.mean()
 
-        # pack
-        pack = torch.cat([speeches, denoised], dim=0)
-        # spectrogram guiding
-        mss = 0.
-        for win in self.windows:
-            # fft
-            fft, = win.shape
-            # [B x 2, fft, T // (fft // 4)]
-            stft = torch.stft(pack, fft, window=win, return_complex=True).abs()
-            # [B, fft, T // (fft // 4)]
-            fft_s, fft_d = stft.clamp_min(1e-5).log().chunk(2, dim=0)
-            # []
-            mss = mss + (fft_s - fft_d).square().mean()
-        # mean
-        mss = mss / len(self.windows)
-
         # []
-        loss = noise_estim + mss
+        loss = noise_estim
         losses = {
             'loss': loss.item(),
             'estim': noise_estim.item(),
             'estim-c': estim_c,
-            'estim-u': estim_u,
-            'mss': mss.item()}
+            'estim-u': estim_u}
         return loss, losses, {
             'base': base.cpu().detach().numpy(),
             'denoised': denoised.cpu().detach().numpy()}

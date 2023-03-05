@@ -20,9 +20,6 @@ class TrainConfig:
         self.smax = 92
         self.std = 0.1
 
-        # spectrogram guiding
-        self.fft = [2048, 1024, 256, 64]
-
         # loader settings
         self.batch = 24
         self.shuffle = True
