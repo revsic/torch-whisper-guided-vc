@@ -5,19 +5,23 @@ from wgvc.config import Config as ModelConfig
 class TrainConfig:
     """Configuration for training loop.
     """
-    def __init__(self, sr: int, hop: int):
+    def __init__(self, sr: int):
         """Initializer.
         Args:
             sr: sample rate.
-            hop: stft hop length.
         """
         # optimizer
         self.learning_rate = 1e-4
         self.beta1 = 0.5
         self.beta2 = 0.9
 
-        # classifier-free guidance
-        self.null_prob = 0.5
+        # augmentation
+        self.smin = 68
+        self.smax = 92
+        self.std = 0.1
+
+        # spectrogram guiding
+        self.fft = [2048, 1024, 256, 64]
 
         # loader settings
         self.split = -100
@@ -29,9 +33,13 @@ class TrainConfig:
         # train iters
         self.epoch = 1000
 
+        # classifier-free guidance
+        null_prob = 0.5
+        self.null_size = int(self.batch * null_prob)
+
         # segment length
         sec = 1.0
-        self.seglen = int(sr * sec) // hop * hop
+        self.seglen = int(sr * sec)
 
         # path config
         self.log = './log'
@@ -48,15 +56,8 @@ class Config:
     """Integrated configuration.
     """
     def __init__(self):
-        self.data = DataConfig(batch=None)
-        self.train = TrainConfig(self.data.sr, self.data.hop)
         self.model = ModelConfig()
-
-    def validate(self):
-        assert (
-            self.data.sr == self.model.sr
-            and self.data.win_fn == 'hann'), \
-                'inconsistent data and model settings'
+        self.train = TrainConfig(self.model.sr)
 
     def dump(self):
         """Dump configurations into serializable dictionary.
