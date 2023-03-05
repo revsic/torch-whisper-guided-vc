@@ -8,7 +8,6 @@ from tqdm import tqdm
 
 from .config import Config
 from .embedder import Embedder
-from .scheduler import Scheduler
 from .upsampler import Upsampler
 from .wavenet import WaveNetBlock
 from .whisper import WhisperWrapper
@@ -27,8 +26,14 @@ class WhisperGuidedVC(nn.Module):
         # alias
         self.w = config.w
         self.tau = config.tau
-        self.norm_scale = config.norm_scale
         self.steps = config.steps
+
+        # [1 + steps]
+        a = torch.arange(1 + config.steps) / config.steps
+        f = ((a + config.s) / (1 + config.s) * np.pi * 0.5).cos().square()
+        self.register_buffer('alphas_bar', f / f[0], persistent=False)
+        # [1 + steps]
+        self.register_buffer('betas', F.pad(1 - f[1:] / f[:-1], [1, 0]), persistent=False)
 
         # models
         self.proj_signal = nn.utils.weight_norm(
@@ -39,11 +44,6 @@ class WhisperGuidedVC(nn.Module):
             config.embeddings,
             config.steps,
             config.mappings)
-
-        self.scheduler = Scheduler(
-            config.steps,
-            config.sched_start,
-            config.sched_end)
 
         self.spkembed = nn.Embedding(config.num_spk, config.spk)
         # for classifier-free guidance
@@ -94,19 +94,19 @@ class WhisperGuidedVC(nn.Module):
             [torch.float32; [B, T]], denoised result.
             S x [np.float32; [B, T]], internal representations.
         """
+        # _, T
+        _, timesteps = context.shape
         # [B, spk]
         spk = F.normalize(self.spkembed(spkid), dim=-1)
         # [B, T]
         signal = signal or torch.randn_like(context)
         # apply temperature
         signal = signal * self.tau ** -0.5
-        # [B, d_model, T' // hop_length]
+        # [B, d_model, T // hop]
         context = self.whisper(context)
-        # [B, d_model, T']
-        context = self.upsampler(context)
         # [B, d_model, T]
-        context = F.interpolate(context, signal.shape[-1], mode='linear')
-        # S x [B, mel, T]
+        context = self.upsampler(context)[..., :timesteps]
+        # S x [B, T]
         ir = [signal.cpu().detach().numpy()]
         # zero-based step
         ranges = range(self.steps - 1, -1, -1)
@@ -138,14 +138,14 @@ class WhisperGuidedVC(nn.Module):
             [torch.float32; [B]], standard deviation.
         """
         # [S + 1]
-        logsnr, betas = self.scheduler()
+        betas = self.betas
         if next_:
             # [B], one-based sample
             beta = betas[steps + 1]
             # [B, mel, T], [B]
             return (1. - beta[:, None, None]).sqrt() * signal, beta.sqrt()
         # [S + 1]
-        alphas_bar = torch.sigmoid(logsnr)
+        alphas_bar = self.alphas_bar
         # [B], one-based sample
         alpha_bar = alphas_bar[steps + 1]
         # [B, T], [B]
@@ -166,18 +166,16 @@ class WhisperGuidedVC(nn.Module):
             [torch.float32; [B, T]], waveform mean, z_{t - 1}
             [torch.float32; [B]], waveform std.
         """
-        # B, T
-        bsize, _ = signal.shape
         # [S + 1]
-        logsnr, betas = self.scheduler()
+        betas = self.betas
         # [S + 1]
-        alphas, alphas_bar = 1. - betas, torch.sigmoid(logsnr)
+        alphas, alphas_bar = 1. - betas, self.alphas_bar
         # [B, T]
-        cond = self.denoise(signal, context, spk, steps)
-        # [B, spk]
-        nullspk = F.normalize(self.nullspk, dim=-1)[None].repeat(bsize, 1)
+        cond = self.denoise(signal, spk, steps, context)
+        # [1, spk]
+        nullspk = F.normalize(self.nullspk, dim=-1)[None]
         # [B, T]
-        uncond = self.denoise(signal, context, nullspk, steps)
+        uncond = self.denoise(signal, nullspk, steps)
         # [B, T], classifier-free guidance
         denoised = (1 + self.w) * cond - self.w * uncond
         # [B], make one-based
@@ -193,15 +191,15 @@ class WhisperGuidedVC(nn.Module):
 
     def denoise(self,
                 signal: torch.Tensor,
-                context: torch.Tensor,
                 spk: torch.Tensor,
-                steps: torch.Tensor) -> torch.Tensor:
+                steps: torch.Tensor,
+                context: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Denoise the signal w.r.t. outpart signal.
         Args:
             signal: [torch.float32; [B, T]], input signal.
             spk: [torch.float32; [B, spk]], speaker vectors.
-            context: [torch.float32; [B, d_model, T]], contextual feature.
             steps: [torch.long; [B]], diffusion steps, zero-based.
+            context: [torch.float32; [B, d_model, T]], contextual feature.
         Returns:
             [torch.float32; [B, T]], denoised signal.
         """

@@ -7,11 +7,10 @@ class Config:
         self.sr = 22050
 
         # diffusion steps
-        self.steps = 64
+        self.steps = 1000
 
         # schedules
-        self.sched_start = 1e-4
-        self.sched_end = 0.05
+        self.s = 0.008
 
         # embedder
         self.pe = 128
@@ -29,9 +28,6 @@ class Config:
 
         # whisper
         self.whisper_name = 'openai/whisper-base'
-        # classifier-guidance, with norm-based scaling
-        # , default 0.3 on guided-tts 2
-        self.norm_scale = 0.3
 
         # upsampler
         self.upkernels = 5
