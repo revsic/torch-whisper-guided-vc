@@ -116,6 +116,5 @@ class TrainingWrapper:
             'noise-estim': noise_estim.item(),
             'mss': mss.item()}
         return loss, losses, {
-            'seg': speeches.cpu().detach().numpy(),
             'base': base.cpu().detach().numpy(),
             'denoised': denoised.cpu().detach().numpy()}
