@@ -29,6 +29,11 @@ class Config:
         # whisper
         self.whisper_name = 'openai/whisper-base'
 
+        # context encoder
+        self.aux = 128
+        self.encoders = 5
+        self.dropout = 0.1
+
         # upsampler
         self.upkernels = 5
         # prod to 160, STFT hop-length of `openai/whisper-base`

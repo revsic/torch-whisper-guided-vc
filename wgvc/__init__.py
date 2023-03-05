@@ -7,7 +7,9 @@ import torch.nn.functional as F
 from tqdm import tqdm
 
 from .config import Config
+from .convglu import ConvGLU
 from .embedder import Embedder
+from .nacf import NACF
 from .upsampler import Upsampler
 from .wavenet import WaveNetBlock
 from .whisper import WhisperWrapper
@@ -53,11 +55,27 @@ class WhisperGuidedVC(nn.Module):
             config.whisper_name,
             config.sr)
 
+        # alias
+        d_model = self.whisper.model.config.d_model
+        self.encoder = nn.Sequential(*(
+            [nn.Conv1d(d_model, config.aux, 1)]
+            + [
+                ConvGLU(config.aux, config.kernels, config.dropout)
+                for _ in range(config.encoders)]))
+
+        self.nacf = NACF(config.sr)
+        self.enc_pitch = nn.Sequential(
+            nn.Conv1d(1, config.aux, 1),
+            nn.ReLU(),
+            nn.Conv1d(
+                config.aux, config.aux, config.upkernels,
+                padding=config.upkernels // 2, groups=config.aux, bias=False))
+
         self.blocks = nn.ModuleList([
             WaveNetBlock(
                 config.channels,
                 config.embeddings + config.spk,
-                self.whisper.model.config.d_model,
+                config.aux,
                 config.kernels,
                 config.dilations ** j)
             for _ in range(config.cycles)
@@ -102,9 +120,23 @@ class WhisperGuidedVC(nn.Module):
         signal = signal or torch.randn_like(context)
         # apply temperature
         signal = signal * self.tau ** -0.5
+
         # [B, d_model, T // hop]
         context = self.whisper(context)
-        # [B, d_model, T]
+        # _, _, T // hop
+        _, _, timesteps = context.shape
+        # [B, S]
+        pitch = self.nacf.forward(context)
+        # [B]
+        median = torch.stack([p[p > 0].median() for p in pitch])
+        # [B, S]
+        pitch = torch.where(pitch > 0, (pitch / median[:, None]).log2(), 0)
+        # [B, 1, T // hop]
+        pitch = F.interpolate(pitch[:, None], size=timesteps, mode='linear')
+
+        # [B, ctx_channels, T // hop]
+        context = self.encoder(context) + self.enc_pitch(pitch)
+        # [B, ctx_channels, T]
         context = self.upsampler(context)[..., :timesteps]
         # S x [B, T]
         ir = [signal.cpu().detach().numpy()]
