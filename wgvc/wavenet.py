@@ -1,3 +1,5 @@
+from typing import Optional
+
 import torch
 import torch.nn as nn
 
@@ -38,7 +40,7 @@ class WaveNetBlock(nn.Module):
     def forward(self,
                 inputs: torch.Tensor,
                 embed: torch.Tensor,
-                seq: torch.Tensor) -> torch.Tensor:
+                seq: Optional[torch.Tensor] = None) -> torch.Tensor:
         """Pass to the wavenet block.
         Args:
             inputs: [torch.float32; [B, C, T]], input tensor.
@@ -51,7 +53,9 @@ class WaveNetBlock(nn.Module):
         # [B, C, T]
         x = inputs + self.proj_embed(embed)[..., None]
         # [B, C x 2, T]
-        x = self.conv(x) + self.proj_seq(seq)
+        x = self.conv(x)
+        if seq is not None:
+            x = x + self.proj_seq(seq)
         # [B, C, T]
         gate, context = x.chunk(2, dim=1)
         # [B, C, T]
