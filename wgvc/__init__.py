@@ -71,6 +71,8 @@ class WhisperGuidedVC(nn.Module):
                 config.aux, config.aux, config.upkernels,
                 padding=config.upkernels // 2, groups=config.aux, bias=False))
 
+        self.factor = config.sr / self.whisper.resample.new_freq
+
         self.blocks = nn.ModuleList([
             WaveNetBlock(
                 config.channels,
@@ -95,6 +97,39 @@ class WhisperGuidedVC(nn.Module):
             config.upkernels,
             config.upscales,
             config.leak)
+
+    def analyze_pitch(self, signal: torch.Tensor) -> torch.Tensor:
+        """Analyze the relative pitch in log-2 scale.
+        Args:
+            signal: [torch.float32; [B, T]], input signal, [-1, 1]-ranged.
+        Returns:
+            [torch.float32; [B, T / 100]], pitch sequence.
+        """
+        # [B, S]
+        pitch = self.nacf.forward(signal)
+        # [B]
+        median = torch.stack([p[p > 0].median() for p in pitch])
+        # [B, S]
+        return torch.where(pitch > 0, (pitch / median[:, None]).log2(), 0)
+
+    def blend(self, context: torch.Tensor, pitch: torch.Tensor) -> torch.Tensor:
+        """Generate the condition of the wavenet from context and pitch.
+        Args:
+            context: [torch.float32; [B, d_model, T' / hop]], context features.
+            pitch: [torch.float32; [B, S]], pitch sequence.
+        Returns:
+            [torch.float32; [B, aux, T]], condition features.
+        """
+        # T' / hop
+        _, _, timesteps = context.shape
+        # [B, 1, T' / hop]
+        pitch = F.interpolate(pitch[:, None], size=timesteps, mode='linear')
+        # [B, aux, T' // hop]
+        cond = self.encoder(context) + self.enc_pitch(pitch)
+        # [B, aux, T // hop]
+        cond = F.interpolate(cond, scale_factor=self.factor, mode='nearest')
+        # [B, aux, T]
+        return self.upsampler(cond)
 
     def forward(self,
                 context: torch.Tensor,
@@ -121,23 +156,12 @@ class WhisperGuidedVC(nn.Module):
         # apply temperature
         signal = signal * self.tau ** -0.5
 
-        # [B, d_model, T // hop]
+        # [B, S]
+        pitch = self.analyze_pitch(context)
+        # [B, d_model, T' // hop]
         context = self.whisper(context)
-        # _, _, T // hop
-        _, _, timesteps = context.shape
-        # [B, S]
-        pitch = self.nacf.forward(context)
-        # [B]
-        median = torch.stack([p[p > 0].median() for p in pitch])
-        # [B, S]
-        pitch = torch.where(pitch > 0, (pitch / median[:, None]).log2(), 0)
-        # [B, 1, T // hop]
-        pitch = F.interpolate(pitch[:, None], size=timesteps, mode='linear')
-
-        # [B, ctx_channels, T // hop]
-        context = self.encoder(context) + self.enc_pitch(pitch)
-        # [B, ctx_channels, T]
-        context = self.upsampler(context)[..., :timesteps]
+        # [B, aux, T]
+        context = self.blend(context, pitch)[..., :timesteps]
         # S x [B, T]
         ir = [signal.cpu().detach().numpy()]
         # zero-based step
