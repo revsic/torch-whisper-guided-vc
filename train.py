@@ -141,7 +141,7 @@ class Trainer:
                     speech[None], sid[Trainer.LOG_IDX, None], use_tqdm=True)
                 self.model.train()
 
-                self.test_plot('test/synth', signal.cpu().numpy(), step)
+                self.test_plot('test/synth', signal.squeeze(dim=0).cpu().numpy(), step)
 
                 # intermediate representation
                 intval = len(ir) // Trainer.EVAL_INTVAL
@@ -177,9 +177,9 @@ class Trainer:
             step: current training steps.
         """
         self.test_log.add_image(
-            f'test/image/{name}', self.mel_img(signal), step)
+            name, self.mel_img(signal), step)
         self.test_log.add_audio(
-            f'test/audio/{name}', signal[None], step, sample_rate=self.config.model.sr)
+            name, signal[None], step, sample_rate=self.config.model.sr)
 
 
 if __name__ == '__main__':
