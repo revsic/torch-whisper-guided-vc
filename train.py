@@ -179,7 +179,7 @@ class Trainer:
         self.test_log.add_image(
             name, self.mel_img(signal), step)
         self.test_log.add_audio(
-            name, signal[None], step, sample_rate=self.config.model.sr)
+            f'{name}-audio', signal[None], step, sample_rate=self.config.model.sr)
 
 
 if __name__ == '__main__':
